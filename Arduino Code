@@ -1,0 +1,226 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+
+const char* wifiSsid = "SSID";
+const char* wifiPassword = "PASSWORD";
+
+#define mqttServer "m20.cloudmqtt.com"
+#define mqttUser "MQTTUSER"
+#define mqttPassword "MQTTPASSWORD"
+
+#define thingspeakHost "api.thingspeak.com"
+#define thingspeakPort 80
+
+#define thingspeakChannelId "TSCHANNEL"
+#define thingspeakApiWriteKey  "TSAPIWRITEKEY"
+#define thingspeakApiReadKey  "TSAPIREADKEY"
+
+#define brightnessTopic "sensor/brightness"
+#define ledTopic "actor/led"
+#define ledModeTopic "actor/led/mode"
+
+int ledBlue = D7; //13
+int ledGreen = D6; //12
+int ledRed = D8; //15
+
+String ledMode = "AUTO";
+int ledState = LOW;
+
+WiFiClient mqttClient;
+WiFiClient thingspeakClient;
+PubSubClient client(mqttClient);
+
+float brightness;
+
+//Herstellen der oben definierten WiFi-Verbindung
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(wifiSsid);
+
+  WiFi.begin(wifiSsid, wifiPassword);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void thingspeakPublishData(String thingspeakChannel, String thingspeakKey) {
+  if (!thingspeakClient.connect(thingspeakHost, thingspeakPort)) {
+    Serial.println("connection failed");
+    return;
+  }
+
+  String bright = String(brightness);
+  String url = "/update?key=";
+  url += thingspeakApiWriteKey;
+  url += "&field1=";
+  url += bright;
+  Serial.print("Requesting URL: ");
+  Serial.println(url);
+
+  //Send request to server
+  thingspeakClient.print(String("GET ") + url + " HTTP/1.1\r\n" + "Host: " + thingspeakHost + "\r\n" + "Connection: close\r\n\r\n");
+  delay(10);
+
+  //Read reply
+  //while(thingspeakClient.available()){
+  // String line = thingspeakClient.readStringUntil('\r');
+  // Serial.print(line);
+  // }
+}
+
+void setLedColor(int r, int g, int b) {
+  analogWrite(D8, r);
+  analogWrite(D6, g);
+  analogWrite(D7, b);
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+
+  payload[length] = '\0';
+  String strPayload = String((char*)payload);
+  strPayload.toUpperCase();
+
+  int intPayload = strPayload.toInt();
+
+  Serial.println("Message arrived [" + String(topic) + "] - Inhalt: " + strPayload);
+
+  if (String(topic) == "actor/led/mode") {
+    if (strPayload == "MAN") {
+      ledMode = strPayload;
+      setLedColor(0,0,0);
+    }
+    if (strPayload == "AUTO") {
+      ledMode = strPayload;
+    }
+    if (strPayload == "ALARM") {
+      ledMode = strPayload;
+    }
+    if (strPayload == "PARTY") {
+      ledMode = strPayload;
+    }
+  }
+  if (String(topic) == "actor/led") {
+    if (ledMode == "MAN") {
+      if (strPayload == "ON") {
+        setLedColor(255, 255, 255);
+      }
+      else if (strPayload == "RED") {
+        setLedColor(255, 0, 0);
+      }
+      else if (strPayload == "GREEN") {
+        setLedColor(0, 255, 0);
+      }
+      else if (strPayload == "BLUE") {
+        setLedColor(0, 0, 255);
+      }
+      else if (strPayload == "OFF") {
+        setLedColor(0, 0, 0);
+      }
+    }
+    if (ledMode == "AUTO") {
+      if (strPayload == "AUTOON") {
+        setLedColor(255, 255, 255);
+      }
+      else if (strPayload == "AUTOOFF") {
+        setLedColor(0, 0, 0);
+      }
+    }
+  }
+}
+
+
+//Setup Funktion, läuft einmal durch. Legt die Verwendung der Pins fest und ruft die Setupfunktionen auf.
+void setup() {
+  pinMode(A0, INPUT);
+  pinMode(D6, OUTPUT);
+  pinMode(D7, OUTPUT);
+  pinMode(D8, OUTPUT);
+
+  Serial.begin(115200);
+  setup_wifi();
+
+  client.setServer(mqttServer, 18464);
+  client.setCallback(mqttCallback);
+}
+
+// Loop zur erneuten Verbindung mit dem MQTT-Broker
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP8266Client", mqttUser, mqttPassword)) {
+      Serial.println("connected");
+      // client.publish(brightnessTopic, String(brightness).c_str(), true);
+      client.subscribe(ledTopic);
+      client.subscribe(ledModeTopic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Warte 5 Sekunden
+      delay(5000);
+    }
+  }
+}
+
+unsigned long previousMillisMqtt = 0;
+unsigned long previousMillisThingspeak = 0;
+unsigned long previousMillisAlarm = 0;
+unsigned long previousMillisParty = 0;
+
+
+//Loop Funktion läuft in Dauerschleife. Kern des Programms
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+
+  unsigned long currentMillisAlarm = millis();
+  if (currentMillisAlarm - previousMillisAlarm > 300) {
+    previousMillisAlarm = currentMillisAlarm;
+    if (ledMode == "ALARM") {
+      if (ledState == LOW) {
+        setLedColor(0, 0, 255);
+        ledState = HIGH;
+      }
+      else {
+        setLedColor(0, 0, 0);
+        ledState = LOW;
+      }
+    }
+  }
+
+  unsigned long currentMillisParty = millis();
+  if (currentMillisParty - previousMillisParty > 100) {
+    previousMillisParty = currentMillisParty;
+    if (ledMode == "PARTY") {
+      setLedColor((int)random(0, 255), (int)random(0, 255), (int)random(0, 255));
+    }
+  }
+
+  unsigned long currentMillisMqtt = millis();
+  if (currentMillisMqtt - previousMillisMqtt > 500) {
+    previousMillisMqtt = currentMillisMqtt;
+
+    brightness = analogRead(A0);
+
+    Serial.print("New brightness:");
+    Serial.println(String(brightness).c_str());
+    client.publish(brightnessTopic, String(brightness).c_str(), true);
+  }
+  unsigned long currentMillisThingspeak = millis();
+  if (currentMillisThingspeak - previousMillisThingspeak > 10000) {
+    previousMillisThingspeak = currentMillisThingspeak;
+    thingspeakPublishData(thingspeakChannelId, thingspeakApiWriteKey);
+  }
+}
